@@ -156,7 +156,6 @@ public class MulticastBase {
             @Override
             public void run() {
                 try {
-                    // sendMessage(new MulticastActionMessage()); // For machines who are already connected
                     
                     while(continueLoopInThread){
                         LOG.debug(subClassName + " is waiting for receiving datagram");
@@ -182,6 +181,7 @@ public class MulticastBase {
                             }
                         } // End of conditional block "ignore packaet sent from myself"
                     } // End of while(continueLoopInThread)
+                    
                 } catch (IOException e) {
                     LOG.error("", e);
                 }   
