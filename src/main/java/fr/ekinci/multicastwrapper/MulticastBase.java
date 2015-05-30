@@ -49,7 +49,7 @@ public class MulticastBase {
     protected Thread currentMessageListenerThread;
     protected volatile boolean continueLoopInThread;
 
-	// /** The datagram Packet<br>Must be the same http://stackoverflow.com/a/7469403 */
+    // /** The datagram Packet<br>Must be the same http://stackoverflow.com/a/7469403 */
     // protected DatagramPacket datagramPacketReceive;
     
     /** MulticastChannel and MembershipKey*/
@@ -115,10 +115,10 @@ public class MulticastBase {
      * @param messageToSend The message to be sent
      * @throws IOException
      */
-    public void sendMessage(MulticastActionMessage messageToSend) throws IOException {	
-    	messageToSend.setMachineType(currentMachineType.toString());
-    	messageToSend.setMachineIp(ipV4AddressOfThisMachine);
-    	String jsonMessageToSend = gson.toJson(messageToSend, MulticastActionMessage.class);
+    public void sendMessage(MulticastActionMessage messageToSend) throws IOException {
+        messageToSend.setMachineType(currentMachineType);
+        messageToSend.setMachineIp(ipV4AddressOfThisMachine);
+        String jsonMessageToSend = gson.toJson(messageToSend, MulticastActionMessage.class);
         
         LOG.debug(subClassName + " : Current machine type : " + messageToSend.getMachineType() + " with IP " + messageToSend.getMachineIp()
                 + "\nSerialized JSON before send :\n" + jsonMessageToSend);
@@ -206,19 +206,19 @@ public class MulticastBase {
      * @throws SocketException
      */
     public static String getIpV4AddressFromNetworkInterface(NetworkInterface networkInterface) throws SocketException {
-    	String ip = null;
-    	if(networkInterface.isUp()){
-	    	Enumeration<InetAddress> e = networkInterface.getInetAddresses();
-	    	while(e.hasMoreElements()) {
-	    		InetAddress ia = e.nextElement();
-	    		if(ia instanceof Inet4Address){
-	    			ip = ia.getHostAddress();
-	    			break;
-	    		}
-	    	}
-    	}
-    	
-    	return ip;
+        String ip = null;
+        if(networkInterface.isUp()){
+            Enumeration<InetAddress> e = networkInterface.getInetAddresses();
+            while(e.hasMoreElements()) {
+                InetAddress ia = e.nextElement();
+                if(ia instanceof Inet4Address){
+                    ip = ia.getHostAddress();
+                    break;
+                }
+            }
+        }
+
+        return ip;
     }
     
     
@@ -229,7 +229,7 @@ public class MulticastBase {
      * @return
      */
     public static String byteBufferToString(ByteBuffer byteBuffer){
-    	byteBuffer.flip();	                
+        byteBuffer.flip();
         byte[] receivedBytes = new byte[byteBuffer.remaining()];
         byteBuffer.get(receivedBytes);
         return new String(receivedBytes);
@@ -264,12 +264,12 @@ public class MulticastBase {
     public void finalize(){
         continueLoopInThread = false;
         
-    	try {
-			dc.close();
-		} catch (IOException e) {
-			LOG.error("Error during closing DatagramChannel in MulticastBase.finalize()", e);
-		}
-    	
-    	LOG.debug(getClass().getName() + " with identityHashCode: " + System.identityHashCode(this) + " has been destroyed");
+        try {
+            dc.close();
+        } catch (IOException e) {
+            LOG.error("Error during closing DatagramChannel in MulticastBase.finalize()", e);
+        }
+
+        LOG.debug(getClass().getName() + " with identityHashCode: " + System.identityHashCode(this) + " has been destroyed");
     }
 }
