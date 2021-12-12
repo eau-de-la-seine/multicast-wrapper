@@ -1,7 +1,9 @@
 package fr.ekinci.multicastwrapper;
 
+import lombok.SneakyThrows;
+import lombok.extern.slf4j.Slf4j;
+
 import java.io.IOException;
-import java.io.StringReader;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -9,21 +11,21 @@ import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.StandardProtocolFamily;
 import java.net.StandardSocketOptions;
-import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 import java.nio.channels.MembershipKey;
+import java.util.ArrayList;
 import java.util.Enumeration;
-import org.apache.log4j.Logger;
-import com.google.gson.Gson;
-import com.google.gson.JsonIOException;
-import com.google.gson.JsonSyntaxException;
-import com.google.gson.stream.JsonReader;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Consumer;
+
+import static java.util.Objects.isNull;
+import static java.util.Objects.nonNull;
 
 
 /**
- * A Multicast wrapper class for sending and receiving {@link MulticastActionMessage} messages
- * in a Clustered environment.
+ * A Multicast wrapper class for sending and receiving messages in a Clustered environment.
  * 
  * You can easily create your own class and extends from this class.
  * 
@@ -33,243 +35,207 @@ import com.google.gson.stream.JsonReader;
  * 
  * @author Gokan EKINCI
  */
-public class MulticastBase {
-    private final static Logger LOG = Logger.getLogger(MulticastBase.class);
-    
-    protected final static Gson gson = new Gson();
-    
-    /**
-     * Max size for UDP Datagram is 65535
-     * Be careful if :
-     * - Your are using a router and it has a limitation for packets size
-     * - Your message is too large
-     */
-    protected final static int RECEIVED_MESSAGE_MAX_SIZE = 65_535;
-    
-    protected Thread currentMessageListenerThread;
-    protected volatile boolean continueLoopInThread;
+@Slf4j
+public class MulticastBase implements AutoCloseable {
 
-    // /** The datagram Packet<br>Must be the same http://stackoverflow.com/a/7469403 */
-    // protected DatagramPacket datagramPacketReceive;
-    
-    /** MulticastChannel and MembershipKey*/
-    protected final DatagramChannel dc;
-    protected final MembershipKey key;
-    
-    /** Network interface name (ex: eth0) and other parameters */
-    protected final String currentMachineNetworkInterfaceName; // example: "eth0";
-    protected final String multicastVirtualGroupIpV4Address;   // example: "224.1.1.1";
-    protected final int    multicastVirtualGroupPort;          // example: 1234;
-    protected final String currentMachineType;                 // Receiver's type  
-    
-    /** Other attributes produced in the constructor */
-    protected final String ipV4AddressOfThisMachine; 
-    protected final InetSocketAddress multicastSocketAddress;
-    protected final String subClassName;
-    
-    /**
-     * Create the multicast base object
-     * 
-     * @param currentMachineType (ex : "server" or "client")
-     * @throws IOException
-     */
-    public MulticastBase(
-            String currentMachineNetworkInterfaceName,
-            String multicastVirtualGroupIpV4Address, 
-            int multicastVirtualGroupPort,
-            String currentMachineType
-    ) throws IOException, SocketException, UnknownHostException { 
-        this.currentMachineNetworkInterfaceName = currentMachineNetworkInterfaceName;
-        this.multicastVirtualGroupIpV4Address = multicastVirtualGroupIpV4Address;
-        this.multicastVirtualGroupPort = multicastVirtualGroupPort;
-        this.currentMachineType = currentMachineType;
-        this.continueLoopInThread = true;
-        
-        // init instanciated simple name :
-        subClassName = getClass().getSimpleName();
-        
-        // Current machine ip address
-        NetworkInterface currentMachineNetworkInterface = NetworkInterface.getByName(currentMachineNetworkInterfaceName);
-        ipV4AddressOfThisMachine = getIpV4AddressFromNetworkInterface(currentMachineNetworkInterface);
-               
-        // Multicast Socket Address
-        InetAddress multicastVirtualGroupInetAddress = InetAddress.getByName(multicastVirtualGroupIpV4Address);
-        multicastSocketAddress = new InetSocketAddress(multicastVirtualGroupInetAddress, multicastVirtualGroupPort);
-        
-        // DatagramChannel initialization
-        dc = DatagramChannel.open(StandardProtocolFamily.INET)
-            .setOption(StandardSocketOptions.SO_REUSEADDR, true)
-            .bind(new InetSocketAddress(multicastVirtualGroupPort))
-            .setOption(StandardSocketOptions.IP_MULTICAST_IF, currentMachineNetworkInterface);
-        
-        // Multicast join
-        key = dc.join(multicastVirtualGroupInetAddress, currentMachineNetworkInterface);
-        LOG.debug("Current machine : " + ipV4AddressOfThisMachine + " has joined multicast ! \n"
-        		+ subClassName + " with identityHashCode: " + System.identityHashCode(this) + " has been instanciated");
-    }
-    
-    
-    /**
-     * Send message to the group
-     * 
-     * @param messageToSend The message to be sent
-     * @throws IOException
-     */
-    public void sendMessage(MulticastActionMessage messageToSend) throws IOException {
-        messageToSend.setMachineType(currentMachineType);
-        messageToSend.setMachineIp(ipV4AddressOfThisMachine);
-        String jsonMessageToSend = gson.toJson(messageToSend, MulticastActionMessage.class);
-        
-        LOG.debug(subClassName + " : Current machine type : " + messageToSend.getMachineType() + " with IP " + messageToSend.getMachineIp()
-                + "\nSerialized JSON before send :\n" + jsonMessageToSend);
-        ByteBuffer byteBuffer = ByteBuffer.wrap(jsonMessageToSend.getBytes());
-        dc.send(byteBuffer, multicastSocketAddress);
-        LOG.debug("Serialized JSON has been sent.");
-    }
-    
-    
-    /**
-     * Send message to the group and wait time out
-     * 
-     * @param messageToSend
-     * @param timeOut in milliseconds
-     * @throws IOException
-     */
-    public void sendMessage(MulticastActionMessage messageToSend, long timeOut) throws IOException {
-        sendMessage(messageToSend);
-        try {
-            Thread.sleep(timeOut);
-        } catch (InterruptedException e) {
-            LOG.error("Error sleep() in Multicastbase.sendMessage", e);
-        }
-    }
-	
-    
-    /**
-     * Receive asynchrounous messages (infinite loop)
-     * Note : Inspired by myButton.addActionListener(ActionListener a)
-     * 
-     * @param messageListener
-     */
-    public void addMessageListener(final ActionMessageListener messageListener){ 
-        Runnable run = new Runnable(){
-            @Override
-            public void run() {
-                try {
-                    
-                    while(continueLoopInThread){
-                        LOG.debug(subClassName + " is waiting for receiving datagram");
-                        ByteBuffer receivedByteBuffer = ByteBuffer.allocate(RECEIVED_MESSAGE_MAX_SIZE);
-                        InetSocketAddress senderAddress = (InetSocketAddress) dc.receive(receivedByteBuffer); // waiting for datagram and fill receivedByteBuffer
-                        String receivedJsonMessage = byteBufferToString(receivedByteBuffer);                        
-                        String datagramSendersIp = senderAddress.getAddress().toString().replace("/", "");
+	/**
+	 * Max size for UDP Datagram is 65_507 (65_535 bytes - 8-byte UDP header - 20-byte IP header)
+	 * Be careful if :
+	 * - Your are using a router and it has a limitation for packets size
+	 * - Your message is too large
+	 */
+	protected final static int RECEIVED_MESSAGE_MAX_SIZE = 65_507;
 
-                        LOG.debug(subClassName + " has received a new message :"
-                        + "\n    Sender's datagram address  : " + datagramSendersIp
-                        + "\n    Local address              : " + ipV4AddressOfThisMachine
-                        + "\n    Is same machine            : " + datagramSendersIp.equals(ipV4AddressOfThisMachine)
-                        + "\n    Unserialized JSON received : " + receivedJsonMessage
-                        + "\nEnd Test");
-                        
-                        // ignore packet sent from myself
-                        if(!datagramSendersIp.equals(ipV4AddressOfThisMachine)){                             
-                            try {                                                
-                                MulticastActionMessage response = fromLenientJson(receivedJsonMessage, MulticastActionMessage.class);                                
-                                messageListener.onMessage(response); // Action inside depends if it's a server or client instance
-                            } catch(com.google.gson.JsonSyntaxException e){
-                                LOG.error("Error during Json unmarshalling", e);
-                            }
-                        } // End of conditional block "ignore packaet sent from myself"
-                    } // End of while(continueLoopInThread)
-                    
-                } catch (IOException e) {
-                    LOG.error("", e);
-                }   
-            }
-        };
-        
-        currentMessageListenerThread = new Thread(run);
-        currentMessageListenerThread.start(); 
-    }
-    
-    public String getIpV4AddressOfThisMachine(){
-        return ipV4AddressOfThisMachine;
-    }
-    
-    
-    /* *** UTIL METHODS *** */
-    
-    /**
-     * Get ip v4 address from network interface
-     * @param networkInterface
-     * @return
-     * @throws SocketException
-     */
-    public static String getIpV4AddressFromNetworkInterface(NetworkInterface networkInterface) throws SocketException {
-        String ip = null;
-        if(networkInterface.isUp()){
-            Enumeration<InetAddress> e = networkInterface.getInetAddresses();
-            while(e.hasMoreElements()) {
-                InetAddress ia = e.nextElement();
-                if(ia instanceof Inet4Address){
-                    ip = ia.getHostAddress();
-                    break;
-                }
-            }
-        }
+	protected final Thread currentMessageListenerThread;
+	protected volatile boolean continueLoopInThread;
 
-        return ip;
-    }
-    
-    
-    /**
-     * Util method for converting {@link ByteBuffer} to String
-     * 
-     * @param byteBuffer
-     * @return
-     */
-    public static String byteBufferToString(ByteBuffer byteBuffer){
-        byteBuffer.flip();
-        byte[] receivedBytes = new byte[byteBuffer.remaining()];
-        byteBuffer.get(receivedBytes);
-        return new String(receivedBytes);
-    }
-    
-    
-    /**
-     * Get object from json chain with Lenient mod for avoiding network character problems
-     * 
-     * @param json
-     * @param clazz
-     * @return
-     * @throws IOException  
-     */
-    public static <T> T fromLenientJson(String json, Class<T> clazz) 
-        throws IOException, JsonIOException, JsonSyntaxException {
-        
-        // Using JsonReader and Lenient for avoiding network character problems
-        JsonReader jsonreader = new JsonReader(new StringReader(json));
-        jsonreader.setLenient(true);
-        T response = gson.fromJson(jsonreader, clazz);
-        jsonreader.close();
-        
-        return response;
-    }
-    
-    
-    /**
-     * Destroy the {@link DatagramChannel} if current instance dies
-     */
-    @Override
-    public void finalize(){
-        continueLoopInThread = false;
-        
-        try {
-            dc.close();
-        } catch (IOException e) {
-            LOG.error("Error during closing DatagramChannel in MulticastBase.finalize()", e);
-        }
+	/** MulticastChannel and MembershipKey*/
+	protected final DatagramChannel dc;
+	protected final MembershipKey key;
 
-        LOG.debug(getClass().getName() + " with identityHashCode: " + System.identityHashCode(this) + " has been destroyed");
-    }
+	/** Network interface name (ex: eth0) and other parameters */
+	protected final NetworkInterface currentMachineNetworkInterface; // example: "eth0";
+	protected final String multicastVirtualGroupIpAddress;           // example: "224.1.1.1";
+	protected final int multicastVirtualGroupPort;                   // example: 1234;
+
+	/** Other attributes produced in the constructor */
+	protected final InetSocketAddress multicastSocketAddress;
+	protected final String implClassName;
+
+	/**
+	 * Create the multicast base object
+	 *
+	 * @param currentMachineNetworkInterface A valid NetworkInterface for multicasting
+	 * @param multicastVirtualGroupIpAddress Multicast Virtual Group IP Address
+	 * @param multicastVirtualGroupPort      Multicast Virtual Group Port
+	 * @param consumerCallback               Consumer
+	 * @param ipMulticastLoop                Accept messages from current machine (set to false for ignoring message from myself)
+	 * @throws IOException                   If an error happens
+	 */
+	public MulticastBase(
+		NetworkInterface currentMachineNetworkInterface,
+		String multicastVirtualGroupIpAddress,
+		int multicastVirtualGroupPort,
+		Consumer<byte[]> consumerCallback,
+		boolean ipMulticastLoop
+	) throws IOException {
+		this.currentMachineNetworkInterface = currentMachineNetworkInterface;
+		this.multicastVirtualGroupIpAddress = multicastVirtualGroupIpAddress;
+		this.multicastVirtualGroupPort = multicastVirtualGroupPort;
+		this.currentMessageListenerThread = nonNull(consumerCallback) ?
+			new Thread(() -> multicastConsumerLoop(consumerCallback)) : null;
+		this.continueLoopInThread = true;
+
+		// init instanciated simple name :
+		implClassName = getClass().getSimpleName();
+
+		// Multicast Socket Address
+		InetAddress multicastVirtualGroupInetAddress = InetAddress.getByName(multicastVirtualGroupIpAddress);
+		multicastSocketAddress = new InetSocketAddress(multicastVirtualGroupInetAddress, multicastVirtualGroupPort);
+
+		// DatagramChannel initialization
+		dc = createMulticastDatagramChannel(multicastVirtualGroupPort, currentMachineNetworkInterface, ipMulticastLoop);
+
+		// Multicast join
+		key = dc.join(multicastVirtualGroupInetAddress, currentMachineNetworkInterface);
+		log.debug("Current machine '{}' has joined multicast! {} with identityHashCode: '{}' has been instanciated",
+			currentMachineNetworkInterface.getName(),
+			implClassName,
+			System.identityHashCode(this));
+	}
+
+	private DatagramChannel createMulticastDatagramChannel(
+		int multicastVirtualGroupPort,
+		NetworkInterface currentMachineNetworkInterface,
+		boolean ipMulticastLoop) throws IOException {
+		return DatagramChannel.open(StandardProtocolFamily.INET)
+			.bind(new InetSocketAddress(multicastVirtualGroupPort))
+			.setOption(StandardSocketOptions.SO_REUSEADDR, true)
+			.setOption(StandardSocketOptions.IP_MULTICAST_IF, currentMachineNetworkInterface)
+			.setOption(StandardSocketOptions.IP_MULTICAST_LOOP, ipMulticastLoop);
+	}
+
+	/**
+	 * Receive asynchrounous messages (infinite loop)
+	 * Blocking method
+	 */
+	public void launchConsumer() {
+		if (isNull(currentMessageListenerThread)) {
+			throw new IllegalCallerException("You cannot launchConsumer() if you have not initialized the consumer callback");
+		}
+		currentMessageListenerThread.start();
+	}
+
+	/**
+	 * Send message to the group
+	 *
+	 * @param message The message to be sent
+	 */
+	@SneakyThrows
+	public void sendMessage(byte[] message) {
+		checkMessage(message);
+		log.debug("{}: Current machine '{}'. Number of bytes to send: {}",
+			implClassName,
+			currentMachineNetworkInterface.getName(),
+			message.length);
+		ByteBuffer byteBuffer = ByteBuffer.wrap(message);
+		dc.send(byteBuffer, multicastSocketAddress);
+	}
+
+	private void checkMessage(byte[] message) {
+		if (isNull(message)) {
+			throw new IllegalArgumentException("message must not be null");
+		} else if (message.length > RECEIVED_MESSAGE_MAX_SIZE) {
+			throw new IllegalArgumentException("message's length must be less than or equal " + RECEIVED_MESSAGE_MAX_SIZE + " bytes");
+		}
+	}
+
+	private void multicastConsumerLoop(Consumer<byte[]> consumerCallback) {
+		try {
+			while (continueLoopInThread) {
+				log.debug("{} is waiting for receiving datagram", implClassName);
+				ByteBuffer receivedByteBuffer = ByteBuffer.allocate(RECEIVED_MESSAGE_MAX_SIZE);
+
+				// waiting for datagram and fill receivedByteBuffer
+				Optional<InetAddress> datagramSendersIp = Optional.ofNullable(dc.receive(receivedByteBuffer))
+					.map(InetSocketAddress.class::cast)
+					.map(InetSocketAddress::getAddress);
+
+				log.debug("""
+					{} has received a new message:
+					Local Network Interface  : {}
+					Sender's datagram address: {}
+					""",
+					implClassName,
+					currentMachineNetworkInterface.getName(),
+					datagramSendersIp);
+
+				consumeReceivedMessage(consumerCallback, receivedByteBuffer);
+			}
+		} catch (IOException e) {
+			log.error("", e);
+		}
+	}
+
+	private void consumeReceivedMessage(Consumer<byte[]> consumerCallback, ByteBuffer receivedByteBuffer) {
+		byte[] message = new byte[receivedByteBuffer.position()];
+		receivedByteBuffer.rewind();
+		receivedByteBuffer.get(message);
+		consumerCallback.accept(message);
+	}
+
+	@Override
+	public void close() {
+		continueLoopInThread = false;
+
+		try {
+			dc.close();
+		} catch (IOException e) {
+			log.error("Error during closing DatagramChannel in MulticastBase#close()", e);
+		}
+
+		log.debug("{} with identityHashCode '{}' has been destroyed",
+			implClassName,
+			System.identityHashCode(this));
+	}
+
+	/* *** UTIL METHODS *** */
+
+	/**
+	 * @return                 A list of valid network interfaces for multicasting
+	 * @throws SocketException If an error happens
+	 */
+	public static List<NetworkInterface> listNetworkInterfaces() throws SocketException {
+		List<NetworkInterface> networkInterfaces = new ArrayList<>();
+		Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+		while (interfaces.hasMoreElements()) {
+			NetworkInterface networkInterface = interfaces.nextElement();
+			if (isValidNetworkInterface(networkInterface)) {
+				networkInterfaces.add(networkInterface);
+			}
+		}
+
+		return networkInterfaces;
+	}
+
+	private static boolean isValidNetworkInterface(NetworkInterface networkInterface) throws SocketException {
+		return networkInterface.isUp()
+			&& networkInterface.supportsMulticast()
+			&& hasIp4(networkInterface);
+	}
+
+	private static boolean hasIp4(NetworkInterface networkInterface) {
+		return networkInterface.inetAddresses()
+			.anyMatch(inetAddress -> inetAddress instanceof Inet4Address);
+	}
+
+	/**
+	 * @param networkInterface Your network interface
+	 * @param inetAddress      Potentially remote Inet4Address or Inet6Address
+	 * @return                 true if networkInterface has the given inetAddress, false otherwise
+	 */
+	public static boolean hasInetAddress(NetworkInterface networkInterface, InetAddress inetAddress) {
+		return networkInterface.inetAddresses()
+			.anyMatch(ia -> ia.equals(inetAddress));
+	}
 }
