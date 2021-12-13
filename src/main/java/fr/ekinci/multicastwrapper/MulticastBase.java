@@ -14,8 +14,6 @@ import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 import java.nio.channels.MembershipKey;
-import java.util.ArrayList;
-import java.util.Enumeration;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -41,7 +39,7 @@ public class MulticastBase implements AutoCloseable {
 	/**
 	 * Max size for UDP Datagram is 65_507 (65_535 bytes - 8-byte UDP header - 20-byte IP header)
 	 * Be careful if :
-	 * - Your are using a router and it has a limitation for packets size
+	 * - You are using a router and it has a limitation for packets size
 	 * - Your message is too large
 	 */
 	protected final static int RECEIVED_MESSAGE_MAX_SIZE = 65_507;
@@ -79,9 +77,9 @@ public class MulticastBase implements AutoCloseable {
 		Consumer<byte[]> consumerCallback,
 		boolean ipMulticastLoop
 	) throws IOException {
-		this.currentMachineNetworkInterface = currentMachineNetworkInterface;
-		this.multicastVirtualGroupIpAddress = multicastVirtualGroupIpAddress;
-		this.multicastVirtualGroupPort = multicastVirtualGroupPort;
+		this.currentMachineNetworkInterface = checkNotNull(currentMachineNetworkInterface, "currentMachineNetworkInterface");
+		this.multicastVirtualGroupIpAddress = checkNotNull(multicastVirtualGroupIpAddress, "multicastVirtualGroupIpAddress");
+		this.multicastVirtualGroupPort = checkPort(multicastVirtualGroupPort);
 		this.currentMessageListenerThread = nonNull(consumerCallback) ?
 			new Thread(() -> multicastConsumerLoop(consumerCallback)) : null;
 		this.continueLoopInThread = true;
@@ -104,6 +102,22 @@ public class MulticastBase implements AutoCloseable {
 			System.identityHashCode(this));
 	}
 
+	private <T> T checkNotNull(T param, String name) {
+		if (isNull(param)) {
+			throw new IllegalArgumentException(String.format("'%s' parameter must not be null", name));
+		}
+
+		return param;
+	}
+
+	private int checkPort(int port) {
+		if (port < 0 || port > 0xFFFF) {
+			throw new IllegalArgumentException("'multicastVirtualGroupPort' is out of range: " + port);
+		}
+
+		return port;
+	}
+
 	private DatagramChannel createMulticastDatagramChannel(
 		int multicastVirtualGroupPort,
 		NetworkInterface currentMachineNetworkInterface,
@@ -117,7 +131,6 @@ public class MulticastBase implements AutoCloseable {
 
 	/**
 	 * Receive asynchrounous messages (infinite loop)
-	 * Blocking method
 	 */
 	public void launchConsumer() {
 		if (isNull(currentMessageListenerThread)) {
@@ -143,9 +156,9 @@ public class MulticastBase implements AutoCloseable {
 	}
 
 	private void checkMessage(byte[] message) {
-		if (isNull(message)) {
-			throw new IllegalArgumentException("message must not be null");
-		} else if (message.length > RECEIVED_MESSAGE_MAX_SIZE) {
+		checkNotNull(message, "message");
+
+		if (message.length > RECEIVED_MESSAGE_MAX_SIZE) {
 			throw new IllegalArgumentException("message's length must be less than or equal " + RECEIVED_MESSAGE_MAX_SIZE + " bytes");
 		}
 	}
@@ -161,14 +174,10 @@ public class MulticastBase implements AutoCloseable {
 					.map(InetSocketAddress.class::cast)
 					.map(InetSocketAddress::getAddress);
 
-				log.debug("""
-					{} has received a new message:
-					Local Network Interface  : {}
-					Sender's datagram address: {}
-					""",
+				log.debug("{} has received a new message from '{}' on network interface '{}'",
 					implClassName,
-					currentMachineNetworkInterface.getName(),
-					datagramSendersIp);
+					datagramSendersIp,
+					currentMachineNetworkInterface.getName());
 
 				consumeReceivedMessage(consumerCallback, receivedByteBuffer);
 			}
@@ -206,22 +215,20 @@ public class MulticastBase implements AutoCloseable {
 	 * @throws SocketException If an error happens
 	 */
 	public static List<NetworkInterface> listNetworkInterfaces() throws SocketException {
-		List<NetworkInterface> networkInterfaces = new ArrayList<>();
-		Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
-		while (interfaces.hasMoreElements()) {
-			NetworkInterface networkInterface = interfaces.nextElement();
-			if (isValidNetworkInterface(networkInterface)) {
-				networkInterfaces.add(networkInterface);
-			}
-		}
-
-		return networkInterfaces;
+		return NetworkInterface.networkInterfaces()
+			.filter(MulticastBase::isValidNetworkInterface)
+			.toList();
 	}
 
-	private static boolean isValidNetworkInterface(NetworkInterface networkInterface) throws SocketException {
-		return networkInterface.isUp()
-			&& networkInterface.supportsMulticast()
-			&& hasIp4(networkInterface);
+	private static boolean isValidNetworkInterface(NetworkInterface networkInterface) {
+		try {
+			return networkInterface.isUp()
+				&& networkInterface.supportsMulticast()
+				&& hasIp4(networkInterface);
+		} catch (SocketException e) {
+			log.error("An error happened while checking NetworkInterface: '{}'", networkInterface, e);
+			return false;
+		}
 	}
 
 	private static boolean hasIp4(NetworkInterface networkInterface) {
